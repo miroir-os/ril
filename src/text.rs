@@ -172,6 +172,9 @@ pub struct TextSegment<'font, 'text, P: Pixel> {
     /// By default, this is ``1.0``. If this is used in a [`TextLayout`], this is ignored and
     /// [`TextLayout::with_line_height`] is used instead.
     pub line_height: f32,
+    /// The maximum height of the text in pixels. If set, the text will be truncated with an
+    /// ellipsis when it exceeds this height. Only takes effect when used in a [`TextLayout`].
+    pub max_height: Option<u32>,
 }
 
 impl<'font, 'text, P: Pixel> TextSegment<'font, 'text, P> {
@@ -196,6 +199,7 @@ impl<'font, 'text, P: Pixel> TextSegment<'font, 'text, P> {
             size: font.optimal_size(),
             wrap: (None, WrapStyle::Word),
             line_height: 1.0,
+            max_height: None,
         }
     }
 
@@ -246,6 +250,16 @@ impl<'font, 'text, P: Pixel> TextSegment<'font, 'text, P> {
     #[must_use]
     pub const fn with_line_height(mut self, line_height: f32) -> Self {
         self.line_height = line_height;
+        self
+    }
+
+    /// Sets the maximum height of the text segment in pixels. If the rendered text exceeds this
+    /// height, it will be truncated with an ellipsis (`...`).
+    ///
+    /// Only takes effect when used in a [`TextLayout`].
+    #[must_use]
+    pub const fn with_max_height(mut self, height: u32) -> Self {
+        self.max_height = Some(height);
         self
     }
 
@@ -575,13 +589,68 @@ impl<'a, P: Pixel> TextLayout<'a, P> {
         self
     }
 
+    /// If the segment has a `max_height` set and the text exceeds it, returns the truncated text
+    /// with an ellipsis appended. Returns `None` if no truncation is needed.
+    fn truncate_text_with_ellipsis(&self, segment: &TextSegment<'_, '_, P>) -> Option<String> {
+        let max_height = segment.max_height? as f32;
+        let ellipsis = "...";
+
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&self.settings);
+        layout.append(
+            &[segment.font.inner()],
+            &TextStyle::new(segment.text, segment.size, 0),
+        );
+
+        if layout.height() <= max_height {
+            return None;
+        }
+
+        // Collect char boundary byte positions for UTF-8 safe binary search
+        let boundaries: Vec<usize> = segment
+            .text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(segment.text.len()))
+            .collect();
+
+        let mut left = 0;
+        let mut right = boundaries.len() - 1;
+
+        while left + 1 < right {
+            let mid = left + (right - left) / 2;
+            let truncated = format!("{}{ellipsis}", &segment.text[..boundaries[mid]]);
+
+            layout.clear();
+            layout.append(
+                &[segment.font.inner()],
+                &TextStyle::new(&truncated, segment.size, 0),
+            );
+
+            if layout.height() <= max_height {
+                left = mid;
+            } else {
+                right = mid;
+            }
+        }
+
+        Some(if left == 0 {
+            ellipsis.to_string()
+        } else {
+            let trimmed = segment.text[..boundaries[left]].trim_end();
+            format!("{trimmed}{ellipsis}")
+        })
+    }
+
     /// Adds a text segment to the text layout.
     pub fn push_segment(&mut self, segment: &TextSegment<'a, '_, P>) {
+        let truncated = self.truncate_text_with_ellipsis(segment);
+        let text = truncated.as_deref().unwrap_or(segment.text);
         self.fonts.push(segment.font.inner());
         self.inner.append(
             &self.fonts,
             &TextStyle::with_user_data(
-                &segment.text,
+                text,
                 segment.size,
                 self.fonts.len() - 1,
                 (segment.fill, segment.overlay),
