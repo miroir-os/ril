@@ -539,23 +539,28 @@ impl<'a, P: Pixel> TextLayout<'a, P> {
             return segment.text.clone();
         }
 
-        // Binary search to find the optimal truncation point
+        // Collect char boundary byte positions for UTF-8 safe binary search
+        let boundaries: Vec<usize> = segment
+            .text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(segment.text.len()))
+            .collect();
+
+        // Binary search on char indices to find the optimal truncation point
         let mut left = 0;
-        let mut right = segment.text.len();
+        let mut right = boundaries.len() - 1;
 
         while left + 1 < right {
             let mid = (left + right) / 2;
-            // Create truncated text with ellipsis
-            let truncated = format!("{}{}", &segment.text[..mid], ellipsis);
+            let truncated = format!("{}{}", &segment.text[..boundaries[mid]], ellipsis);
 
-            // Clear the layout and append the truncated text
             layout.clear();
             layout.append(
                 &[segment.font.inner()],
                 &TextStyle::new(&truncated, segment.size, 0),
             );
 
-            // If the truncated text fits, try a longer string; otherwise, try a shorter one
             if layout.height() <= max_height {
                 left = mid;
             } else {
@@ -564,11 +569,9 @@ impl<'a, P: Pixel> TextLayout<'a, P> {
         }
 
         if left == 0 {
-            // If even the shortest truncation doesn't fit, just return the ellipsis
             ellipsis.to_string()
         } else {
-            // Trim whitespace at the end before adding ellipsis
-            let trimmed_text = segment.text[..left].trim_end();
+            let trimmed_text = segment.text[..boundaries[left]].trim_end();
             format!("{trimmed_text}{ellipsis}")
         }
     }
